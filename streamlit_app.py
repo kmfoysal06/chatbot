@@ -70,7 +70,7 @@ with st.sidebar:
 # ----------------------------
 # Main interface
 # ----------------------------
-st.title("💬 AI Chatbot")
+st.title("💬 AI Chatbot - lol mizan vai")
 st.caption("Your configurable AI assistant")
 
 if not api_key.strip():
