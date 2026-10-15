@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 from openai import OpenAI
 
@@ -167,4 +166,3 @@ if prompt := st.chat_input("Ask me anything..."):
                 and st.session_state.messages[-1]["content"] == prompt
             ):
                 st.session_state.messages.pop()
-```
