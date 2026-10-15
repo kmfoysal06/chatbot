@@ -1,56 +1,170 @@
+```python
 import streamlit as st
 from openai import OpenAI
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+st.set_page_config(
+    page_title="AI Chatbot",
+    page_icon="💬",
+    layout="centered",
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# ----------------------------
+# Session state
+# ----------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+if "config_id" not in st.session_state:
+    st.session_state.config_id = None
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
+
+# ----------------------------
+# Sidebar: API configuration
+# ----------------------------
+with st.sidebar:
+    st.title("⚙️ Settings")
+    st.caption("Connect any OpenAI-compatible API.")
+
+    api_key = st.text_input(
+        "API Key",
+        type="password",
+        placeholder="Enter your API key",
+        help="Your key is used for API requests and is not displayed.",
+    )
+
+    base_url = st.text_input(
+        "API Endpoint",
+        value="https://api.openai.com/v1",
+        help="The API base URL, usually ending in /v1.",
+    )
+
+    model = st.text_input(
+        "Model",
+        value="gpt-4o-mini",
+        help="Enter a model ID supported by your provider.",
+    )
+
+    system_prompt = st.text_area(
+        "System Prompt",
+        value="You are a helpful AI assistant. Answer clearly and accurately.",
+        height=120,
+    )
+
+    temperature = st.slider(
+        "Temperature",
+        min_value=0.0,
+        max_value=2.0,
+        value=0.7,
+        step=0.1,
+    )
+
+    if st.button("New Chat", use_container_width=True):
         st.session_state.messages = []
+        st.rerun()
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    st.divider()
+    st.caption("API credentials are held in Streamlit session state only "
+               "if you choose to store them there. This app does not "
+               "save them to a file or database.")
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# ----------------------------
+# Main interface
+# ----------------------------
+st.title("💬 AI Chatbot")
+st.caption("Your configurable AI assistant")
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
+if not api_key.strip():
+    st.info("Enter your API key in the sidebar to start chatting.")
+    st.stop()
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+if not base_url.strip() or not model.strip():
+    st.warning("Please enter both an API endpoint and a model name.")
+    st.stop()
+
+# Remove accidental whitespace and identify config changes.
+base_url = base_url.strip().rstrip("/")
+model = model.strip()
+
+# Reset the conversation when the provider configuration changes.
+# The API key is included in the comparison but never displayed.
+import hashlib
+
+config_id = hashlib.sha256(
+    f"{api_key}\n{base_url}\n{model}".encode()
+).hexdigest()
+
+if st.session_state.config_id != config_id:
+    st.session_state.messages = []
+    st.session_state.config_id = config_id
+
+# Create the OpenAI-compatible client.
+client = OpenAI(
+    api_key=api_key,
+    base_url=base_url,
+    timeout=60.0,
+    max_retries=2,
+)
+
+# Display conversation history.
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Chat input.
+if prompt := st.chat_input("Ask me anything..."):
+    st.session_state.messages.append(
+        {"role": "user", "content": prompt}
+    )
+
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Build the request.
+    api_messages = [
+        {"role": "system", "content": system_prompt},
+        *st.session_state.messages,
+    ]
+
+    with st.chat_message("assistant"):
+        try:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=api_messages,
+                temperature=temperature,
+                stream=True,
+            )
+
+            def response_chunks():
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+
+                    content = chunk.choices[0].delta.content
+
+                    if isinstance(content, str):
+                        yield content
+
+            response = st.write_stream(response_chunks())
+
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response}
+            )
+
+        except Exception as exc:
+            # Avoid showing credentials or request headers to the user.
+            st.error(
+                "The API request failed. Check your API key, endpoint, "
+                "model name, provider availability, and API limits."
+            )
+            with st.expander("Technical details"):
+                st.code(f"{type(exc).__name__}: {exc}")
+
+            # Remove the failed user turn so it can be retried.
+            if (
+                st.session_state.messages
+                and st.session_state.messages[-1]["role"] == "user"
+                and st.session_state.messages[-1]["content"] == prompt
+            ):
+                st.session_state.messages.pop()
+```
